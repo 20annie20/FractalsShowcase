@@ -1,0 +1,107 @@
+// MIT License
+
+// Copyright (c) 2021 NedMakesGames
+
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files(the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and / or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions :
+
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Main
+
+// This describes a vertex on the source mesh
+struct SourceVertex {
+    float3 positionOS;
+    float2 uv;
+};
+// Source buffers, arranged as a vertex buffer and index buffer
+StructuredBuffer<SourceVertex> _SourceVertices;
+StructuredBuffer<int> _SourceIndices;
+
+// This describes a vertex on the generated mesh
+struct GeneratedVertex {
+    float3 positionOS;
+    float3 normalOS;
+    float2 uv;
+};
+// Source and index buffers for the generated mesh
+RWStructuredBuffer<GeneratedVertex> _GeneratedVertices;
+RWStructuredBuffer<int> _GeneratedIndices;
+
+int _NumSourceTriangles;
+float _PyramidHeight;
+float4x4 _Transform;
+
+// Apply the _Transform matrix
+SourceVertex Transform(SourceVertex v) {
+    SourceVertex o;
+    o.positionOS = mul(_Transform, float4(v.positionOS, 1)).xyz;
+    o.uv = v.uv;
+    return o;
+}
+
+// Calculates the normal vector of a plane containing the given triangle
+float3 CalculateTriangleNormal(float3 a, float3 b, float3 c) {
+    return normalize(cross(b - a, c - a));
+}
+
+// Create a generated vertex
+GeneratedVertex MakeGeneratedVertex(SourceVertex source, float3 normal) {
+    GeneratedVertex o;
+    o.positionOS = source.positionOS;
+    o.normalOS = normal;
+    o.uv = source.uv;
+    return o;
+}
+
+void AddTriangle(int startIndex, SourceVertex a, SourceVertex b, SourceVertex c) {
+    float3 triangleNormal = CalculateTriangleNormal(a.positionOS, b.positionOS, c.positionOS);
+    // We want sharp shading, so each triangle is composed of it's own three vertices
+    // We have to do this since vertices at the same position would not have the same normal
+    _GeneratedVertices[startIndex] = MakeGeneratedVertex(a, triangleNormal);
+    _GeneratedVertices[startIndex + 1] = MakeGeneratedVertex(b, triangleNormal);
+    _GeneratedVertices[startIndex + 2] = MakeGeneratedVertex(c, triangleNormal);
+    _GeneratedIndices[startIndex] = startIndex;
+    _GeneratedIndices[startIndex + 1] = startIndex + 1;
+    _GeneratedIndices[startIndex + 2] = startIndex + 2;
+}
+
+
+[numthreads(128, 1, 1)]
+void Main(uint3 id : SV_DispatchThreadID) {
+
+    if ((int)id.x >= _NumSourceTriangles) {
+        return;
+    }
+
+    int triStart = id.x * 3;
+    SourceVertex a = Transform(_SourceVertices[_SourceIndices[triStart]]);
+    SourceVertex b = Transform(_SourceVertices[_SourceIndices[triStart + 1]]);
+    SourceVertex c = Transform(_SourceVertices[_SourceIndices[triStart + 2]]);
+
+    float3 triNormal = CalculateTriangleNormal(a.positionOS, b.positionOS, c.positionOS);
+    SourceVertex center;
+    center.positionOS = (a.positionOS + b.positionOS + c.positionOS) / 3 + triNormal * _PyramidHeight;
+    center.uv = (a.uv + b.uv + c.uv) / 3;
+
+
+    int generatedStart = id.x * 3 * 3;
+
+    AddTriangle(generatedStart, a, b, center);
+    AddTriangle(generatedStart + 3, b, c, center);
+    AddTriangle(generatedStart + 6, c, a, center);
+}
